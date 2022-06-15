@@ -3,8 +3,7 @@
 import datetime
 import logging
 
-from odoo import SUPERUSER_ID, _, api, fields, models
-from odoo.exceptions import ValidationError
+from odoo import SUPERUSER_ID, api, fields, models
 
 _logger = logging.getLogger(__name__)
 
@@ -32,6 +31,7 @@ class ResUsersRole(models.Model):
         default=lambda cls: cls.env.ref("base_user_role.ir_module_category_role").id,
         string="Associated category",
         help="Associated group's category",
+        readonly=False,
     )
 
     @api.depends("line_ids.user_id")
@@ -46,6 +46,14 @@ class ResUsersRole(models.Model):
         return new_record
 
     def write(self, vals):
+        # Workaround to solve issue with broken code in odoo that clear the cache
+        # during the write: see odoo/addons/base/models/res_users.py#L226
+        groups_vals = {}
+        for field in self.group_id._fields:
+            if field in vals:
+                groups_vals[field] = vals.pop(field)
+        if groups_vals:
+            self.group_id.write(groups_vals)
         res = super(ResUsersRole, self).write(vals)
         self.update_users()
         return res
@@ -85,23 +93,13 @@ class ResUsersRoleLine(models.Model):
     date_from = fields.Date("From")
     date_to = fields.Date("To")
     is_enabled = fields.Boolean("Enabled", compute="_compute_is_enabled")
-    company_id = fields.Many2one(
-        "res.company", "Company", default=lambda self: self.env.user.company_id
-    )
-
-    @api.constrains("user_id", "company_id")
-    def _check_company(self):
-        for record in self:
-            if (
-                record.company_id
-                and record.company_id != record.user_id.company_id
-                and record.company_id not in record.user_id.company_ids
-            ):
-                raise ValidationError(
-                    _('User "{}" does not have access to the company "{}"').format(
-                        record.user_id.name, record.company_id.name
-                    )
-                )
+    _sql_constraints = [
+        (
+            "user_role_uniq",
+            "unique (user_id,role_id)",
+            "Roles can be assigned to a user only once at a time",
+        )
+    ]
 
     @api.depends("date_from", "date_to")
     def _compute_is_enabled(self):
